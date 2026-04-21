@@ -1,0 +1,14 @@
+[Unit]
+Description=Lvbxnt Football Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/lvbxnt_football_bot
+ExecStart=/home/ubuntu/lvbxnt_football_bot/.venv/bin/python /home/ubuntu/lvbxnt_football_bot/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
