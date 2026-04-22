@@ -15,7 +15,7 @@ from utils.timezone_helper import get_bot_tz
 
 BOT_TZ = get_bot_tz()
 CACHE: Dict[str, Dict] = {}
-CACHE_TTL = 300
+CACHE_TTL = 600
 
 
 def _now_ts() -> float:
@@ -40,15 +40,12 @@ def _merge_match(existing: Dict, incoming: Dict) -> Dict:
     merged = dict(existing)
     merged["home_name"] = choose_best_name(existing.get("home_name", ""), incoming.get("home_name", ""))
     merged["away_name"] = choose_best_name(existing.get("away_name", ""), incoming.get("away_name", ""))
-
-    for field in ("provider_match_id", "status", "home_score", "away_score"):
+    for field in ("provider_match_id", "status", "home_score", "away_score", "venue", "league_round"):
         if merged.get(field) in (None, "", "SCHEDULED") and incoming.get(field) not in (None, ""):
             merged[field] = incoming[field]
-
-    preferred = {"football-data.org": 3, "API-Football": 2, "TheSportsDB": 1}
+    preferred = {"API-Football": 4, "football-data.org": 3, "TheSportsDB": 1}
     if preferred.get(incoming.get("provider", ""), 0) > preferred.get(merged.get("provider", ""), 0):
         merged["provider"] = incoming.get("provider", merged.get("provider"))
-
     return merged
 
 
@@ -59,55 +56,45 @@ class ProviderHub:
         self.api_football = ApiFootballService(API_FOOTBALL_API_KEY)
         self.statsbomb = StatsBombService(STATSBOMB_ENABLED)
 
+    def _strict_target_day(self, utc_date: str, target_day) -> bool:
+        if not utc_date:
+            return False
+        try:
+            dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00")).astimezone(BOT_TZ).date()
+            return dt == target_day
+        except Exception:
+            return target_day.strftime("%Y-%m-%d") in utc_date
+
     def competition_matches_for_day(self, code: str, day_offset: int = 0) -> List[Dict]:
         cache_key = f"day::{code}::{day_offset}"
         cached = _get_cache(cache_key)
         if cached is not None:
             return cached
-
         comp = COMPETITIONS.get(code)
         if not comp:
             return []
-
         target_day = datetime.now(BOT_TZ).date() + timedelta(days=day_offset)
-        from_date = target_day.strftime("%Y-%m-%d")
-        to_date = target_day.strftime("%Y-%m-%d")
-
+        target_str = target_day.strftime("%Y-%m-%d")
         out: List[Dict] = []
-
-        if comp.get("sportsdb_league_id"):
-            # TheSportsDB "next league events" often returns more than one day; we filter below
+        league_id = comp.get("api_football_league_id")
+        season = comp.get("season")
+        if league_id and season:
+            out.extend(self.api_football.fixtures_by_league_and_date(league_id, season, target_str))
+        if len(out) < 6 and comp.get("football_data_code"):
+            out.extend(self.football_data.competition_matches(comp["football_data_code"], target_str, target_str))
+        if len(out) < 4 and comp.get("sportsdb_league_id"):
             out.extend(self.sportsdb.next_league_events(comp.get("sportsdb_league_id")))
-
-        if comp.get("football_data_code"):
-            out.extend(
-                self.football_data.competition_matches(
-                    comp["football_data_code"],
-                    from_date,
-                    to_date,
-                )
-            )
-
         uniq: Dict[str, Dict] = {}
-        for m in out:
-            utc_date = m.get("utc_date", "")
-            if from_date not in utc_date:
-                # filter strict by target day when source returned a broader set
-                try:
-                    dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00")).astimezone(BOT_TZ).date()
-                    if dt != target_day:
-                        continue
-                except Exception:
-                    pass
-
-            m["competition_code"] = code
-            m["competition"] = comp["name"]
-            m["token"] = build_match_key(m.get("home_name", ""), m.get("away_name", ""), m.get("utc_date", ""))
-            key = m["token"]
-            uniq[key] = _merge_match(uniq[key], m) if key in uniq else m
-
+        for match in out:
+            if not self._strict_target_day(match.get("utc_date", ""), target_day):
+                continue
+            match["competition_code"] = code
+            match["competition"] = comp["name"]
+            match["token"] = build_match_key(match.get("home_name", ""), match.get("away_name", ""), match.get("utc_date", ""))
+            key = match["token"]
+            uniq[key] = _merge_match(uniq[key], match) if key in uniq else match
         matches = list(uniq.values())
-        matches.sort(key=lambda x: x.get("utc_date", ""))
+        matches.sort(key=lambda item: item.get("utc_date", ""))
         _set_cache(cache_key, matches)
         return matches
 
@@ -116,74 +103,81 @@ class ProviderHub:
         cached = _get_cache(cache_key)
         if cached is not None:
             return cached
-
-        all_matches: List[Dict] = []
         uniq: Dict[str, Dict] = {}
-
-        for code in COMPETITIONS.keys():
-            for m in self.competition_matches_for_day(code, day_offset):
-                key = m["token"]
-                uniq[key] = _merge_match(uniq[key], m) if key in uniq else m
-
-        all_matches = list(uniq.values())
-        all_matches.sort(key=lambda x: (x.get("competition", ""), x.get("utc_date", "")))
-        _set_cache(cache_key, all_matches)
-        return all_matches
+        for code in COMPETITIONS:
+            for match in self.competition_matches_for_day(code, day_offset):
+                key = match["token"]
+                uniq[key] = _merge_match(uniq[key], match) if key in uniq else match
+        matches = list(uniq.values())
+        matches.sort(key=lambda item: (item.get("competition", ""), item.get("utc_date", "")))
+        _set_cache(cache_key, matches)
+        return matches
 
     def competition_recent_results(self, code: str) -> List[Dict]:
         cache_key = f"recent::{code}"
         cached = _get_cache(cache_key)
         if cached is not None:
             return cached
-
         comp = COMPETITIONS.get(code)
         if not comp:
             return []
-
+        today = datetime.now(BOT_TZ).date()
+        from_date = today - timedelta(days=45)
         out: List[Dict] = []
-
-        if comp.get("sportsdb_league_id"):
+        league_id = comp.get("api_football_league_id")
+        season = comp.get("season")
+        if league_id and season:
+            for offset in range(0, 35):
+                date_str = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+                fixtures = self.api_football.fixtures_by_league_and_date(league_id, season, date_str)
+                finished = [x for x in fixtures if x.get("home_score") is not None and x.get("away_score") is not None]
+                out.extend(finished)
+                if len(out) >= 24:
+                    break
+        if len(out) < 12 and comp.get("football_data_code"):
+            out.extend(self.football_data.competition_matches(comp["football_data_code"], from_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")))
+        if len(out) < 12 and comp.get("sportsdb_league_id"):
             out.extend(self.sportsdb.past_league_events(comp.get("sportsdb_league_id")))
-
-        if len(out) < 10 and comp.get("football_data_code"):
-            today = datetime.now(BOT_TZ).date()
-            from_date = today - timedelta(days=35)
-            out.extend(
-                self.football_data.competition_matches(
-                    comp["football_data_code"],
-                    from_date.strftime("%Y-%m-%d"),
-                    today.strftime("%Y-%m-%d"),
-                )
-            )
-
         uniq: Dict[str, Dict] = {}
-        for m in out:
-            m["competition_code"] = code
-            m["competition"] = comp["name"]
-            key = build_match_key(m.get("home_name", ""), m.get("away_name", ""), m.get("utc_date", ""))
-            uniq[key] = _merge_match(uniq[key], m) if key in uniq else m
-
-        matches = list(uniq.values())
-        matches.sort(key=lambda x: x.get("utc_date", ""), reverse=True)
+        for match in out:
+            match["competition_code"] = code
+            match["competition"] = comp["name"]
+            key = build_match_key(match.get("home_name", ""), match.get("away_name", ""), match.get("utc_date", ""))
+            uniq[key] = _merge_match(uniq[key], match) if key in uniq else match
+        matches = [m for m in uniq.values() if m.get("home_score") is not None and m.get("away_score") is not None]
+        matches.sort(key=lambda item: item.get("utc_date", ""), reverse=True)
         _set_cache(cache_key, matches)
         return matches
 
-    def find_finished_score(self, competition_code: str, home: str, away: str, kickoff_utc: str) -> Optional[str]:
+    def competition_standings(self, code: str) -> Dict[str, Dict]:
+        cache_key = f"standings::{code}"
+        cached = _get_cache(cache_key)
+        if cached is not None:
+            return cached
+        comp = COMPETITIONS.get(code)
+        if not comp:
+            return {}
+        league_id = comp.get("api_football_league_id")
+        season = comp.get("season")
+        raw = self.api_football.standings(league_id, season) if league_id and season else {}
+        normalized = {normalize_team_name(name): info for name, info in raw.items()}
+        _set_cache(cache_key, normalized)
+        return normalized
+
+    def get_table_row(self, competition_code: str, team_name: str) -> Dict:
+        return self.competition_standings(competition_code).get(normalize_team_name(team_name), {})
+
+    def find_finished_result(self, competition_code: str, home: str, away: str, kickoff_utc: str) -> Optional[Dict]:
         wanted_key = build_match_key(home, away, kickoff_utc)
         recent = self.competition_recent_results(competition_code)
-
-        for m in recent:
-            candidate_key = build_match_key(m.get("home_name", ""), m.get("away_name", ""), m.get("utc_date", ""))
-            if candidate_key == wanted_key:
-                hs, a_s = m.get("home_score"), m.get("away_score")
-                if hs is not None and a_s is not None:
-                    return f"{hs}-{a_s}"
-
         wanted_home = normalize_team_name(home)
         wanted_away = normalize_team_name(away)
-        for m in recent:
-            if normalize_team_name(m.get("home_name", "")) == wanted_home and normalize_team_name(m.get("away_name", "")) == wanted_away:
-                hs, a_s = m.get("home_score"), m.get("away_score")
-                if hs is not None and a_s is not None:
-                    return f"{hs}-{a_s}"
+        for match in recent:
+            candidate_key = build_match_key(match.get("home_name", ""), match.get("away_name", ""), match.get("utc_date", ""))
+            if candidate_key == wanted_key and match.get("home_score") is not None and match.get("away_score") is not None:
+                return match
+        for match in recent:
+            if normalize_team_name(match.get("home_name", "")) == wanted_home and normalize_team_name(match.get("away_name", "")) == wanted_away:
+                if match.get("home_score") is not None and match.get("away_score") is not None:
+                    return match
         return None
