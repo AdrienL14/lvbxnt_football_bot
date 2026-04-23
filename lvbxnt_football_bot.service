@@ -1,5 +1,5 @@
 [Unit]
-Description=LVBXNT Football Bot V2
+Description=LVBXNT Football Bot V4
 After=network.target
 
 [Service]

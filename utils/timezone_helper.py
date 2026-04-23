@@ -23,7 +23,17 @@ def format_day_label(day_offset: int) -> str:
         prefix = "Après-demain"
     else:
         prefix = target.strftime("%A")
-    return f"{prefix} ({target.strftime('%d/%m')})"
+    return f"{prefix} ({target.strftime('%d-%m')})"
+
+
+def format_day_choice_label(day_offset: int) -> str:
+    base = now_local().date()
+    target = base.fromordinal(base.toordinal() + day_offset)
+    return f"📅 {target.strftime('%d-%m-%Y')}"
+
+
+def next_day_labels(count: int = 3) -> list[str]:
+    return [format_day_choice_label(i) for i in range(count)]
 
 
 def format_local_kickoff(utc_date: str) -> str:
@@ -31,6 +41,6 @@ def format_local_kickoff(utc_date: str) -> str:
         return "Heure inconnue"
     try:
         dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00")).astimezone(get_bot_tz())
-        return dt.strftime("%d/%m %H:%M")
+        return dt.strftime("%d-%m-%Y %H:%M")
     except Exception:
         return utc_date[:16].replace("T", " ")

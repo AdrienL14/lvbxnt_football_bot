@@ -1,14 +1,15 @@
-# LVBXNT Football Bot V2
+# LVBXNT Football Bot V4
 
-Version V2 plus propre pour le local maintenant, avec base déjà prête pour Oracle plus tard.
+Version V4 locale, plus rapide et plus sélective, déjà structurée pour la future partie Oracle 24/7.
 
 ## Ce qui change
-- historique réel en SQLite
-- suivi automatique des résultats réglés
-- sessions utilisateur persistantes
-- intégration API-Football pour fixtures + standings
-- analyse améliorée avec forme pondérée + classement
-- projet nettoyé pour GitHub
+- Sniper Pro plus strict
+- max 3 picks propres
+- sinon 2 / 1 / NO VALUE BET
+- filtre anti-matchs trop équilibrés
+- filtre anti-favoris surévalués
+- préchargement du cache au démarrage
+- structure déjà prête pour Oracle plus tard
 
 ## Installation locale Windows
 ```powershell
@@ -29,16 +30,22 @@ python app.py
 - `/history`
 - `/settle`
 
-## Push GitHub
+## GitHub
 ```powershell
-git init
 git add .
-git commit -m "LVBXNT Football Bot V2"
-git branch -M main
-git remote add origin TON_URL_GITHUB
-git push -u origin main
+git commit -m "LVBXNT Football Bot V4"
+git push
 ```
 
 ## Plus tard pour Oracle
-Le code est déjà prêt pour variables d’environnement + stockage local + lancement stable.
-Quand tu auras ton compte Oracle, on fera uniquement la partie déploiement 24/7.
+Le projet contient déjà:
+- variables d’environnement propres
+- `start_oracle.sh`
+- `lvbxnt_football_bot.service`
+
+Quand tu auras ton compte Oracle, on fera uniquement:
+- création VM
+- upload projet
+- venv
+- service systemd
+- lancement 24/7
